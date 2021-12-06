@@ -1,0 +1,17 @@
+robot_name: "spot"
+
+### lidar range configuration params ###
+LIDAR_RANGE_METERS: 10.0
+LIDAR_HEIGHT_METERS: 5.0
+RESOLUTION: 0.05
+
+### Spot robot configuration ###
+kMaxLinearSpeed: 1.6 #m/s
+
+### Joystick configuration for the rosbag ###
+### USING THE DualShock 4 Joystick ###
+kXAxis: 4
+kYAxis: 3
+kRAxis: 0
+kSitBtn: 0
+kStandBtn: 2
