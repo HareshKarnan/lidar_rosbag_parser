@@ -27,7 +27,11 @@ def get_2d_grid(x_list, y_list, z_list):
     return grid
 
 class BEVLidar:
-    def __init__(self, x_range=(-20, 20), y_range=(-20, 20), z_range=(-1, 5), resolution=0.05):
+    def __init__(self, x_range=(-20, 20),
+                 y_range=(-20, 20),
+                 z_range=(-1, 5),
+                 resolution=0.05,
+                 threshold_z_range=True):
         self.x_range = x_range
         self.y_range = y_range
         self.z_range = z_range
@@ -35,6 +39,7 @@ class BEVLidar:
         self.dx = x_range[1]/resolution
         self.dy = y_range[1]/resolution
         self.img_size = int(1 + (x_range[1] - x_range[0]) / resolution)
+        self.threshold_z_range = threshold_z_range
         cprint('created the bev image handler class', 'green', attrs=['bold'])
 
     def get_bev_lidar_img(self, lidar_points):
@@ -43,7 +48,10 @@ class BEVLidar:
             if self.not_in_range_check(x, y, z): continue
             ix = (self.dx + int(x / self.resolution))
             iy = (self.dy - int(y / self.resolution))
-            img[int(round(iy)), int(round(ix))] = 1 if z >= 0.01 else 0
+            if self.threshold_z_range:
+                img[int(round(iy)), int(round(ix))] = 1 if z >= 0.01 else 0
+            else:
+                img[int(round(iy)), int(round(ix))] = z/(self.z_range[1]-self.z_range[0])
         return img
 
     def not_in_range_check(self, x, y, z):

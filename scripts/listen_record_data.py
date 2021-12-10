@@ -44,6 +44,8 @@ class ListenRecordData:
 
         self.tfBuffer = tf2_ros.Buffer()
         self.listener = tf2_ros.TransformListener(self.tfBuffer)
+        self.bf = tf2_ros.TransformBroadcaster()
+
 
     @staticmethod
     def convert_float64img_to_uint8(image):
@@ -64,13 +66,15 @@ class ListenRecordData:
         bev_lidar_image = self.bevlidar_handler.get_bev_lidar_img(lidar_points)
         bev_lidar_image = self.convert_float64img_to_uint8(bev_lidar_image)
 
-        # show the image
+        # # show the image
         # cv2.imshow('bev_lidar', bev_lidar_image)
         # cv2.waitKey(1)
 
         # get the pose
         try:
-            trans = self.tfBuffer.lookup_transform('base_link', 'map', rospy.Time())
+            trans = self.tfBuffer.lookup_transform('map', 'base_link', lidar.header.stamp)
+            trans.child_frame_id = 'my_base_link'
+            self.bf.sendTransform(trans)
         except Exception as e:
             cprint('Exception :: ' + str(e), 'red')
             return
@@ -100,43 +104,42 @@ class ListenRecordData:
 
             linear_x = self.joystickValue(joy_axes[self.config['kXAxis']], -self.config['kMaxLinearSpeed'])
             linear_y = self.joystickValue(joy_axes[self.config['kYAxis']], -self.config['kMaxLinearSpeed'])
-            angular_z = self.joystickValue(joy_axes[self.config['kRAxis']], -np.deg2rad(90.0))
-
+            angular_z = self.joystickValue(joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
             cmd_vel = [linear_x, linear_y, angular_z]
             self.data['joystick'][i] = cmd_vel
         cprint('Joystick values converted to cmd_vel ', 'blue', attrs=['bold'])
-
-
         print('Number of data points : ', len(self.data['pose']))
         print('Saving data to : ', data_path)
         pickle.dump(self.data, open(data_path, 'wb'))
         cprint('Done!', 'green')
 
     @staticmethod
-    def joystickValue(x, scale):
-        kDeadZone = 0.02
-        if abs(x) < kDeadZone: return 0.0
+    def joystickValue(x, scale, kDeadZone=0.02):
+        if kDeadZone != 0.0 and abs(x) < kDeadZone: return 0.0
         return ((x - np.sign(x) * kDeadZone) / (1.0 - kDeadZone) * scale)
 
 if __name__ == '__main__':
     rospy.init_node('listen_record_data', anonymous=True)
     rosbag_path = rospy.get_param('rosbag_path')
     robot_name = rospy.get_param('robot_name')
-    print('rosbag_path: ', rosbag_path)
+    save_data_path = rospy.get_param('save_data_path')
     if not os.path.exists(rosbag_path):
         raise FileNotFoundError('ROS bag file not found')
+    if not os.path.exists(save_data_path):
+        cprint('Creating directory : ' + save_data_path, 'blue', attrs=['bold'])
+        os.makedirs(save_data_path)
 
     # find root of the ros node and config file path
     package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     config_file_path = os.path.join(package_root, 'config/'+str(robot_name)+'.yaml')
 
     # start a subprocess to run the rosbag
-    rosbag_play_process = subprocess.Popen(['rosbag', 'play', rosbag_path, '-r', '1', '--clock'])
+    rosbag_play_process = subprocess.Popen(['rosbag', 'play', rosbag_path, '-r', '2', '--clock'])
 
-    save_data_path = os.path.join(rospy.get_param('save_data_path'), rosbag_path.split('/')[-1].replace('.bag', '_data.pkl'))
+    save_data_path = os.path.join(save_data_path, rosbag_path.split('/')[-1].replace('.bag', '_data.pkl'))
 
-    datarecorder = ListenRecordData(rosbag_play_process = rosbag_play_process,
-                                    config_path = config_file_path)
+    datarecorder = ListenRecordData(rosbag_play_process=rosbag_play_process,
+                                    config_path=config_file_path)
 
     while not rospy.is_shutdown():
         #check if the python process is still running
