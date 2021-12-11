@@ -88,26 +88,17 @@ class ListenRecordData:
 
         # get joystick data
         joy_axes = joystick.axes
-        joy_buttons = joystick.buttons
+        linear_x = self.joystickValue(joy_axes[self.config['kXAxis']], -self.config['kMaxLinearSpeed'])
+        linear_y = self.joystickValue(joy_axes[self.config['kYAxis']], -self.config['kMaxLinearSpeed'])
+        angular_z = self.joystickValue(joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
+        print('linear_x: ' + str(linear_x) + ' linear_y: ' + str(linear_y) + ' angular_z: ' + str(angular_z))
 
         # append to the data
         self.data['pose'].append([x, y, yaw])
         self.data['bevlidarimg'].append(bev_lidar_image)
-        self.data['joystick'].append([joy_axes, joy_buttons])
+        self.data['joystick'].append([linear_x, linear_y, angular_z])
 
     def save_data(self, data_path):
-        """ convert joystick values to cmd_vel """
-        cprint('Converting joystick values to cmd_vel.. ', 'blue', attrs=['bold'])
-        for i in tqdm(range(len(self.data['joystick']))):
-            joy_axes = self.data['joystick'][i][0]
-            joy_buttons = self.data['joystick'][i][1]
-
-            linear_x = self.joystickValue(joy_axes[self.config['kXAxis']], -self.config['kMaxLinearSpeed'])
-            linear_y = self.joystickValue(joy_axes[self.config['kYAxis']], -self.config['kMaxLinearSpeed'])
-            angular_z = self.joystickValue(joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
-            cmd_vel = [linear_x, linear_y, angular_z]
-            self.data['joystick'][i] = cmd_vel
-        cprint('Joystick values converted to cmd_vel ', 'blue', attrs=['bold'])
         print('Number of data points : ', len(self.data['pose']))
         print('Saving data to : ', data_path)
         pickle.dump(self.data, open(data_path, 'wb'))
