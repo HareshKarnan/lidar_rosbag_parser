@@ -46,12 +46,7 @@ class ListenRecordData:
         self.listener = tf2_ros.TransformListener(self.tfBuffer)
         self.bf = tf2_ros.TransformBroadcaster()
 
-
-    @staticmethod
-    def convert_float64img_to_uint8(image):
-        image = np.clip(image, 0, 1)
-        image = (image * 255).astype(np.uint8)
-        return image
+        self.distance_travelled = None
 
     def callback(self, lidar, joystick):
         """[callback function for the approximate time synchronizer]
@@ -83,6 +78,12 @@ class ListenRecordData:
         y = trans.transform.translation.y
         quaternion = [trans.transform.rotation.x, trans.transform.rotation.y, trans.transform.rotation.z, trans.transform.rotation.w]
 
+        if self.distance_travelled is not None:
+            self.distance_travelled += np.linalg.norm(np.asarray([x, y]) - np.asarray([self.data['pose'][-1][0], self.data['pose'][-1][1]]))
+
+        if self.distance_travelled is None:
+            self.distance_travelled = 0.0
+
         # convert quaternion to yaw angle
         yaw = R.from_quat(quaternion).as_euler('xyz', degrees=True)[2]
 
@@ -91,7 +92,7 @@ class ListenRecordData:
         linear_x = self.joystickValue(joy_axes[self.config['kXAxis']], -self.config['kMaxLinearSpeed'])
         linear_y = self.joystickValue(joy_axes[self.config['kYAxis']], -self.config['kMaxLinearSpeed'])
         angular_z = self.joystickValue(joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
-        print('linear_x: ' + str(linear_x) + ' linear_y: ' + str(linear_y) + ' angular_z: ' + str(angular_z))
+        # print('linear_x: ' + str(linear_x) + ' linear_y: ' + str(linear_y) + ' angular_z: ' + str(angular_z))
 
         # append to the data
         self.data['pose'].append([x, y, yaw])
@@ -100,6 +101,7 @@ class ListenRecordData:
 
     def save_data(self, data_path):
         print('Number of data points : ', len(self.data['pose']))
+        cprint('Distance travelled : '+str(self.distance_travelled), 'green', attrs=['bold'])
         print('Saving data to : ', data_path)
         pickle.dump(self.data, open(data_path, 'wb'))
         cprint('Done!', 'green')
@@ -108,6 +110,12 @@ class ListenRecordData:
     def joystickValue(x, scale, kDeadZone=0.02):
         if kDeadZone != 0.0 and abs(x) < kDeadZone: return 0.0
         return ((x - np.sign(x) * kDeadZone) / (1.0 - kDeadZone) * scale)
+
+    @staticmethod
+    def convert_float64img_to_uint8(image):
+        image = np.clip(image, 0, 1)
+        image = (image * 255).astype(np.uint8)
+        return image
 
 if __name__ == '__main__':
     rospy.init_node('listen_record_data', anonymous=True)
@@ -125,7 +133,7 @@ if __name__ == '__main__':
     config_file_path = os.path.join(package_root, 'config/'+str(robot_name)+'.yaml')
 
     # start a subprocess to run the rosbag
-    rosbag_play_process = subprocess.Popen(['rosbag', 'play', rosbag_path, '-r', '2', '--clock'])
+    rosbag_play_process = subprocess.Popen(['rosbag', 'play', rosbag_path, '-r', '1', '--clock'])
 
     save_data_path = os.path.join(save_data_path, rosbag_path.split('/')[-1].replace('.bag', '_data.pkl'))
 
