@@ -40,7 +40,8 @@ class ListenRecordData:
 
         self.bevlidar_handler = BEVLidar(x_range=(-self.config['LIDAR_RANGE_METERS'], self.config['LIDAR_RANGE_METERS']),
                                          y_range=(-self.config['LIDAR_RANGE_METERS'], self.config['LIDAR_RANGE_METERS']),
-                                         z_range=(0, self.config['LIDAR_HEIGHT_METERS']), resolution=self.config['RESOLUTION'])
+                                         z_range=(-self.config['LIDAR_HEIGHT_METERS'], self.config['LIDAR_HEIGHT_METERS']),
+                                         resolution=self.config['RESOLUTION'], threshold_z_range=False)
 
         self.tfBuffer = tf2_ros.Buffer()
         self.listener = tf2_ros.TransformListener(self.tfBuffer)
@@ -62,8 +63,8 @@ class ListenRecordData:
         bev_lidar_image = self.convert_float64img_to_uint8(bev_lidar_image)
 
         # # show the image
-        # cv2.imshow('bev_lidar', bev_lidar_image)
-        # cv2.waitKey(1)
+        cv2.imshow('bev_lidar', bev_lidar_image)
+        cv2.waitKey(1)
 
         # get the pose
         try:
