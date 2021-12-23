@@ -124,6 +124,7 @@ if __name__ == '__main__':
     robot_name = rospy.get_param('robot_name')
     save_data_path = rospy.get_param('save_data_path')
     if not os.path.exists(rosbag_path):
+        cprint('rosbag path : ' + str(rosbag_path), 'red', attrs=['bold'])
         raise FileNotFoundError('ROS bag file not found')
     if not os.path.exists(save_data_path):
         cprint('Creating directory : ' + save_data_path, 'blue', attrs=['bold'])
