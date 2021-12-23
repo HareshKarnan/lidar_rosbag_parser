@@ -20,7 +20,7 @@ import yaml
 import tf2_ros
 
 class ListenRecordData:
-    def __init__(self, rosbag_play_process, config_path):
+    def __init__(self, rosbag_play_process, config_path, viz_lidar):
         self.rosbag_play_process = rosbag_play_process
         self.data = []
         lidar = message_filters.Subscriber('/velodyne_points', PointCloud2)
@@ -48,6 +48,7 @@ class ListenRecordData:
         self.bf = tf2_ros.TransformBroadcaster()
 
         self.distance_travelled = None
+        self.viz_lidar = viz_lidar
 
     def callback(self, lidar, joystick):
         """[callback function for the approximate time synchronizer]
@@ -62,9 +63,10 @@ class ListenRecordData:
         bev_lidar_image = self.bevlidar_handler.get_bev_lidar_img(lidar_points)
         bev_lidar_image = self.convert_float64img_to_uint8(bev_lidar_image)
 
-        # # show the image
-        cv2.imshow('bev_lidar', bev_lidar_image)
-        cv2.waitKey(1)
+        if self.viz_lidar=="true":
+            # show the image
+            cv2.imshow('bev_lidar', bev_lidar_image)
+            cv2.waitKey(1)
 
         # get the pose
         try:
@@ -123,6 +125,8 @@ if __name__ == '__main__':
     rosbag_path = rospy.get_param('rosbag_path')
     robot_name = rospy.get_param('robot_name')
     save_data_path = rospy.get_param('save_data_path')
+    viz_lidar = rospy.get_param('viz_lidar')
+
     if not os.path.exists(rosbag_path):
         cprint('rosbag path : ' + str(rosbag_path), 'red', attrs=['bold'])
         raise FileNotFoundError('ROS bag file not found')
@@ -140,7 +144,8 @@ if __name__ == '__main__':
     save_data_path = os.path.join(save_data_path, rosbag_path.split('/')[-1].replace('.bag', '_data.pkl'))
 
     datarecorder = ListenRecordData(rosbag_play_process=rosbag_play_process,
-                                    config_path=config_file_path)
+                                    config_path=config_file_path,
+                                    viz_lidar=viz_lidar)
 
     while not rospy.is_shutdown():
         #check if the python process is still running
