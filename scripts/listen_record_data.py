@@ -130,9 +130,12 @@ if __name__ == '__main__':
     if not os.path.exists(rosbag_path):
         cprint('rosbag path : ' + str(rosbag_path), 'red', attrs=['bold'])
         raise FileNotFoundError('ROS bag file not found')
+
     if not os.path.exists(save_data_path):
         cprint('Creating directory : ' + save_data_path, 'blue', attrs=['bold'])
         os.makedirs(save_data_path)
+    else:
+        cprint('Directory already exists : ' + save_data_path, 'blue', attrs=['bold'])
 
     # find root of the ros node and config file path
     package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
