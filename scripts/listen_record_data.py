@@ -31,10 +31,17 @@ class ListenRecordData:
         ts = message_filters.ApproximateTimeSynchronizer([lidar, joystick], 100, 0.05, allow_headerless=True)
         ts.registerCallback(self.callback)
 
+
         # read the config file
         self.config = yaml.load(open(config_path, 'r'))
         print('Config file loaded!')
         print(self.config)
+
+        if self.config['robot_name'] == "spot":
+            cprint('Processing rosbag collected on the SPOT', 'green', attrs=['bold'])
+
+        elif self.config['robot_name'] == "jackal":
+            cprint('Processing rosbag collected on the JACKAL', 'green', attrs=['bold'])
 
         self.data = {'pose': [], 'bevlidarimg': [], 'joystick': []}
 
@@ -101,6 +108,11 @@ class ListenRecordData:
         self.data['pose'].append([x, y, yaw])
         self.data['bevlidarimg'].append(bev_lidar_image)
         self.data['joystick'].append([linear_x, linear_y, angular_z])
+
+        # # if using spot, then also record the odom data in self.data
+        # if self.config['robot_name'] == "spot":
+
+
 
     def save_data(self, data_path):
         print('Number of data points : ', len(self.data['pose']))
