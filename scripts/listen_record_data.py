@@ -17,7 +17,6 @@ from scipy.spatial.transform import Rotation as R
 from tqdm import tqdm
 from parse_utils import BEVLidar
 import yaml
-import tf2_ros
 
 class ListenRecordData:
     def __init__(self, rosbag_play_process, config_path, viz_lidar):
@@ -27,8 +26,8 @@ class ListenRecordData:
         # odom = message_filters.Subscriber('/aft_mapped_to_init', Odometry)
         # joystick = message_filters.Subscriber('/bluetooth_teleop/joy', Joy)
         joystick = message_filters.Subscriber('/joystick', Joy)
-
-        ts = message_filters.ApproximateTimeSynchronizer([lidar, joystick], 100, 0.05, allow_headerless=True)
+        odom = message_filters.Subscriber('/odom', Odometry)
+        ts = message_filters.ApproximateTimeSynchronizer([lidar, joystick, odom], 100, 0.05, allow_headerless=True)
         ts.registerCallback(self.callback)
 
 
@@ -37,27 +36,30 @@ class ListenRecordData:
         print('Config file loaded!')
         print(self.config)
 
+        self.data = {'pose': [], 'bevlidarimg': [], 'joystick': []}
+
         if self.config['robot_name'] == "spot":
             cprint('Processing rosbag collected on the SPOT', 'green', attrs=['bold'])
+            self.data['odom'] = []
+
+            # setup subsciber for odom
+            self.odom_msgs = np.zeros((100, 6), dtype=np.float32)
+            self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
 
         elif self.config['robot_name'] == "jackal":
             cprint('Processing rosbag collected on the JACKAL', 'green', attrs=['bold'])
 
-        self.data = {'pose': [], 'bevlidarimg': [], 'joystick': []}
 
         self.bevlidar_handler = BEVLidar(x_range=(-self.config['LIDAR_RANGE_METERS'], self.config['LIDAR_RANGE_METERS']),
                                          y_range=(-self.config['LIDAR_RANGE_METERS'], self.config['LIDAR_RANGE_METERS']),
                                          z_range=(-self.config['LIDAR_HEIGHT_METERS'], self.config['LIDAR_HEIGHT_METERS']),
                                          resolution=self.config['RESOLUTION'], threshold_z_range=False)
 
-        self.tfBuffer = tf2_ros.Buffer()
-        self.listener = tf2_ros.TransformListener(self.tfBuffer)
-        self.bf = tf2_ros.TransformBroadcaster()
-
         self.distance_travelled = None
         self.viz_lidar = viz_lidar
 
-    def callback(self, lidar, joystick):
+
+    def callback(self, lidar, joystick, odom):
         """[callback function for the approximate time synchronizer]
 
         Args:
@@ -76,17 +78,10 @@ class ListenRecordData:
             cv2.waitKey(1)
 
         # get the pose
-        try:
-            trans = self.tfBuffer.lookup_transform('map', 'base_link', lidar.header.stamp)
-            trans.child_frame_id = 'my_base_link'
-            self.bf.sendTransform(trans)
-        except Exception as e:
-            cprint('Exception :: ' + str(e), 'red')
-            return
-
-        x = trans.transform.translation.x
-        y = trans.transform.translation.y
-        quaternion = [trans.transform.rotation.x, trans.transform.rotation.y, trans.transform.rotation.z, trans.transform.rotation.w]
+        x = odom.pose.pose.position.x
+        y = odom.pose.pose.position.y
+        ori = odom.pose.pose.orientation
+        quaternion = [ori.x, ori.y, ori.z, ori.w]
 
         if self.distance_travelled is not None:
             self.distance_travelled += np.linalg.norm(np.asarray([x, y]) - np.asarray([self.data['pose'][-1][0], self.data['pose'][-1][1]]))
@@ -102,17 +97,22 @@ class ListenRecordData:
         linear_x = self.joystickValue(joy_axes[self.config['kXAxis']], -self.config['kMaxLinearSpeed'])
         linear_y = self.joystickValue(joy_axes[self.config['kYAxis']], -self.config['kMaxLinearSpeed'])
         angular_z = self.joystickValue(joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
-        # print('linear_x: ' + str(linear_x) + ' linear_y: ' + str(linear_y) + ' angular_z: ' + str(angular_z))
 
         # append to the data
         self.data['pose'].append([x, y, yaw])
         self.data['bevlidarimg'].append(bev_lidar_image)
         self.data['joystick'].append([linear_x, linear_y, angular_z])
 
-        # # if using spot, then also record the odom data in self.data
-        # if self.config['robot_name'] == "spot":
+        # # if using spot, then also record the past 1 sec odom data in self.data
+        if self.config['robot_name'] == "spot":
+            self.data['odom'].append(self.odom_msgs.flatten())
 
 
+    def odom_callback(self, odom):
+        self.odom_msgs = np.roll(self.odom_msgs, -1, axis=0)
+        tmp = odom.twist.twist
+        self.odom_msgs[-1] = np.array([tmp.linear.x, tmp.linear.y, tmp.linear.z,
+                                       tmp.angular.x, tmp.angular.y, tmp.angular.z])
 
     def save_data(self, data_path):
         print('Number of data points : ', len(self.data['pose']))
