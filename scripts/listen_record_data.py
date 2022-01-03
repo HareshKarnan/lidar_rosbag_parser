@@ -154,7 +154,7 @@ if __name__ == '__main__':
     config_file_path = os.path.join(package_root, 'config/'+str(robot_name)+'.yaml')
 
     # start a subprocess to run the rosbag
-    rosbag_play_process = subprocess.Popen(['rosbag', 'play', rosbag_path, '-r', '2', '--clock'])
+    rosbag_play_process = subprocess.Popen(['rosbag', 'play', rosbag_path, '-r', '1', '--clock'])
 
     save_data_path = os.path.join(save_data_path, rosbag_path.split('/')[-1].replace('.bag', '_data.pkl'))
 
