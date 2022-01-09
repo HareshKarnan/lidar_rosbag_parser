@@ -160,6 +160,8 @@ class ListenRecordData:
                                              [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
                                               odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]]))
 
+        print('recorded message :: ', self.n, '\n')
+
     def path_callback(self, msg):
         """
         Callback for the global path
