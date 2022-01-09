@@ -5,7 +5,7 @@ import time
 import sensor_msgs.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2, Joy
 from nav_msgs.msg import Odometry, Path
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped
 import rospy
 import cv2
 import matplotlib.pyplot as plt
@@ -19,6 +19,7 @@ from tqdm import tqdm
 from parse_utils import BEVLidar
 import yaml
 import rosbag
+import tf2_ros
 
 class ListenRecordData:
     def __init__(self, rosbag_play_process, config_path, viz_lidar, odom_msgs=None, time_stamps=None):
@@ -71,6 +72,9 @@ class ListenRecordData:
         self.path_sub = rospy.Subscriber('/move_base/TrajectoryPlannerROS/global_plan', Path, self.path_callback)
         self.move_base_path = None
 
+        # setup tf2 publisher
+        self.tf2_pub = tf2_ros.TransformBroadcaster()
+
 
     def callback(self, lidar, joystick, odom):
         """[callback function for the approximate time synchronizer]
@@ -96,7 +100,7 @@ class ListenRecordData:
                 odom_k = self.recorded_odom_msgs[k]
                 dist = np.linalg.norm(np.array([odom.pose.pose.position.x, odom.pose.pose.position.y])-
                                       np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
-                if dist > 2.0: break
+                if dist > 5.0: break
             # goal = self.convert_odom_to_posestamped_goal(self.recorded_odom_msgs[future_index])
             goal = self.convert_odom_to_posestamped_goal(odom_k)
             self.pub_goal.publish(goal)
@@ -184,6 +188,20 @@ class ListenRecordData:
 
 
     def odom_callback(self, odom):
+
+        tf = TransformStamped()
+        tf.header.stamp = rospy.Time.now()
+        tf.header.frame_id = 'odom'
+        tf.child_frame_id = 'base_link'
+        tf.transform.translation.x = odom.pose.pose.position.x
+        tf.transform.translation.y = odom.pose.pose.position.y
+        tf.transform.translation.z = 0.0
+        tf.transform.rotation.x = odom.pose.pose.orientation.x
+        tf.transform.rotation.y = odom.pose.pose.orientation.y
+        tf.transform.rotation.z = odom.pose.pose.orientation.z
+        tf.transform.rotation.w = odom.pose.pose.orientation.w
+        self.tf2_pub.sendTransform(tf)
+
         self.odom_msgs = np.roll(self.odom_msgs, -1, axis=0)
         tmp = odom.twist.twist
         self.odom_msgs[-1] = np.array([tmp.linear.x, tmp.linear.y, tmp.linear.z,
