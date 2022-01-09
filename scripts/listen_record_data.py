@@ -186,7 +186,7 @@ class ListenRecordData:
             tmp.append([odom.pose.pose.position.x, odom.pose.pose.position.y,
                         [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
                         odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]])
-        return np.asarray(tmp)
+        return np.array(tmp)
 
 
     def odom_callback(self, odom):
