@@ -147,14 +147,14 @@ class ListenRecordData:
 
         # save the move_base_path
         if self.move_base_path is not None and (self.move_base_path_time - current_time) < 0.5:
-            move_base_path = self.move_base_path_to_numpy_array(self.move_base_path)
+            move_base_path = self.move_base_path_to_list(self.move_base_path)
             self.data['move_base_path'].append(move_base_path)
         else:
             cprint("move base path not available", "red", attrs=["bold"])
             self.data['move_base_path'].append(None)
 
         # save the human expert path
-        human_expert_path = self.odom_msg_list_to_numpy_array(self.recorded_odom_msgs[closest_index:future_index])
+        human_expert_path = self.odom_msg_list_to_list(self.recorded_odom_msgs[closest_index:future_index])
         self.data['human_expert_odom'].append(human_expert_path)
         self.data['odom'].append(np.asarray([odom.pose.pose.position.x, odom.pose.pose.position.y,
                                              [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
@@ -171,22 +171,22 @@ class ListenRecordData:
             self.move_base_path_time = msg.header.stamp.to_sec() - self.start_time
 
     @staticmethod
-    def move_base_path_to_numpy_array(move_base_path):
+    def move_base_path_to_list(move_base_path):
         move_base_path_list = []
         for goal in move_base_path.poses:
             move_base_path_list.append([goal.pose.position.x, goal.pose.position.y, [goal.pose.orientation.x,
                                    goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w]])
-        return np.asarray(move_base_path_list)
+        return move_base_path_list
 
 
     @staticmethod
-    def odom_msg_list_to_numpy_array(odoms):
+    def odom_msg_list_to_list(odoms):
         tmp = []
         for odom in odoms:
             tmp.append([odom.pose.pose.position.x, odom.pose.pose.position.y,
                         [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
                         odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]])
-        return np.array(tmp)
+        return tmp
 
 
     def odom_callback(self, odom):
