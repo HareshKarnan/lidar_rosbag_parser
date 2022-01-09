@@ -156,9 +156,9 @@ class ListenRecordData:
         # save the human expert path
         human_expert_path = self.odom_msg_list_to_list(self.recorded_odom_msgs[closest_index:future_index])
         self.data['human_expert_odom'].append(human_expert_path)
-        self.data['odom'].append(np.asarray([odom.pose.pose.position.x, odom.pose.pose.position.y,
-                                             [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
-                                              odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]]))
+        self.data['odom'].append([odom.pose.pose.position.x, odom.pose.pose.position.y,
+                                 [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
+                                  odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]])
 
         print('recorded message :: ', self.n, '\n')
 
