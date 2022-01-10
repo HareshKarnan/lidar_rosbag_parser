@@ -94,14 +94,14 @@ class ListenRecordData:
         # find the closest message index in the recorded odom messages
         closest_index = np.argmin(np.abs(current_time - self.recorded_time_stamps))
         future_index = min(closest_index + 30, self.recorded_time_stamps.shape[0] - 1)
+        odom_k = None
+        for future_index, k in enumerate(range(closest_index, len(self.recorded_odom_msgs))):
+            odom_k = self.recorded_odom_msgs[k]
+            dist = np.linalg.norm(np.array([odom.pose.pose.position.x, odom.pose.pose.position.y]) -
+                                  np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
+            if dist > 5.0: break
+
         if self.n % 3 == 0:
-            odom_k = None
-            for future_index, k in enumerate(range(closest_index, len(self.recorded_odom_msgs))):
-                odom_k = self.recorded_odom_msgs[k]
-                dist = np.linalg.norm(np.array([odom.pose.pose.position.x, odom.pose.pose.position.y])-
-                                      np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
-                if dist > 5.0: break
-            # goal = self.convert_odom_to_posestamped_goal(self.recorded_odom_msgs[future_index])
             goal = self.convert_odom_to_posestamped_goal(odom_k)
             self.pub_goal.publish(goal)
 
@@ -159,8 +159,6 @@ class ListenRecordData:
         self.data['odom'].append([odom.pose.pose.position.x, odom.pose.pose.position.y,
                                  [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
                                   odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]])
-
-        print('recorded message :: ', self.n, '\n')
 
     def path_callback(self, msg):
         """
