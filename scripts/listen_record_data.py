@@ -5,7 +5,7 @@ import time
 import sensor_msgs.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2, Joy
 from nav_msgs.msg import Odometry, Path
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 import rospy
 import cv2
 import matplotlib.pyplot as plt
@@ -44,7 +44,8 @@ class ListenRecordData:
         # publish global goal to move_base
         self.pub_goal = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=1)
 
-        self.data = {'pose': [], 'bevlidarimg': [], 'joystick': [], 'move_base_path': [], 'human_expert_odom': [], 'odom': []}
+        self.data = {'pose': [], 'bevlidarimg': [], 'joystick': [], 'move_base_path': [], 'human_expert_odom': [],
+                     'odom': [], 'move_base_cmd_vel': []}
 
         if self.config['robot_name'] == "spot":
             cprint('Processing rosbag collected on the SPOT', 'green', attrs=['bold'])
@@ -71,6 +72,10 @@ class ListenRecordData:
         # setup subscriber for global path
         self.path_sub = rospy.Subscriber('/move_base/TrajectoryPlannerROS/global_plan', Path, self.path_callback)
         self.move_base_path = None
+
+        # setup subscriber for cmd_vel
+        self.last_cmd_vel_callback, self.last_cmd_vel_callback_path = None, None
+        self.cmd_vel_sub = rospy.Subscriber('/cmd_vel', Twist, self.cmd_vel_callback)
 
         # setup tf2 publisher
         self.tf2_pub = tf2_ros.TransformBroadcaster()
@@ -160,13 +165,26 @@ class ListenRecordData:
                                  [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
                                   odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]])
 
+        # save the cmd_vel msg
+        if self.last_cmd_vel_callback_path is None:
+            self.data['move_base_cmd_vel'].append([None, None, None])
+        else:
+            self.data['move_base_cmd_vel'].append(
+                [self.last_cmd_vel_callback.linear.x,
+                 self.last_cmd_vel_callback.linear.y,
+                 self.last_cmd_vel_callback.angular.z])
+
     def path_callback(self, msg):
         """
         Callback for the global path
         """
         if self.start_time is not None:
             self.move_base_path = msg
+            self.last_cmd_vel_callback_path = self.last_cmd_vel_callback
             self.move_base_path_time = msg.header.stamp.to_sec() - self.start_time
+
+    def cmd_vel_callback(self, msg):
+        self.last_cmd_vel_callback = msg
 
     @staticmethod
     def move_base_path_to_list(move_base_path):
