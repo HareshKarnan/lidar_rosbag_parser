@@ -21,6 +21,22 @@ import yaml
 import rosbag
 import tf2_ros
 
+def get_affine_mat(x, y, theta):
+    """
+    Returns the affine transformation matrix for the given parameters.
+    """
+    theta = np.deg2rad(theta)
+    return np.array([[np.cos(theta), -np.sin(theta), x],
+                     [np.sin(theta), np.cos(theta) , y],
+                     [0            , 0             , 1]])
+
+
+def get_affine_matrix_quat(x, y, quaternion):
+    theta = R.from_quat(quaternion).as_euler('XYZ')[2]
+    return np.array([[np.cos(theta), -np.sin(theta), x],
+                     [np.sin(theta), np.cos(theta), y],
+                     [0, 0, 1]])
+
 class ListenRecordData:
     def __init__(self, rosbag_play_process, config_path, viz_lidar, odom_msgs=None, time_stamps=None):
         self.rosbag_play_process = rosbag_play_process
@@ -53,7 +69,7 @@ class ListenRecordData:
 
             # setup subsciber for odom
             self.odom_msgs = np.zeros((100, 6), dtype=np.float32)
-            self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
+            self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback, queue_size=1)
 
         elif self.config['robot_name'] == "jackal":
             cprint('Processing rosbag collected on the JACKAL', 'green', attrs=['bold'])
@@ -91,20 +107,20 @@ class ListenRecordData:
 
         # get the time of the current message in seconds
         if self.start_time is None: self.start_time = lidar.header.stamp.to_sec()
-        current_time = lidar.header.stamp.to_sec() - self.start_time
+        current_time = lidar.header.stamp.to_sec()
 
         self.n+=1
 
         # publish the goal
         # find the closest message index in the recorded odom messages
-        closest_index = np.argmin(np.abs(current_time - self.recorded_time_stamps))
-        future_index = min(closest_index + 30, self.recorded_time_stamps.shape[0] - 1)
-        odom_k = None
-        for future_index, k in enumerate(range(closest_index, len(self.recorded_odom_msgs))):
-            odom_k = self.recorded_odom_msgs[k]
+        closest_index = np.searchsorted(self.recorded_time_stamps, current_time)+1
+        future_index = min(closest_index + 30, len(self.recorded_odom_msgs) - 1)
+        odom_k = self.recorded_odom_msgs[future_index]
+        for future_index in range(closest_index, len(self.recorded_odom_msgs)):
+            odom_k = self.recorded_odom_msgs[future_index]
             dist = np.linalg.norm(np.array([odom.pose.pose.position.x, odom.pose.pose.position.y]) -
                                   np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
-            if dist > 5.0: break
+            if dist > 10.0: break
 
         if self.n % 3 == 0:
             goal = self.convert_odom_to_posestamped_goal(odom_k)
@@ -130,10 +146,6 @@ class ListenRecordData:
 
         # convert quaternion to yaw angle
         yaw = R.from_quat(quaternion).as_euler('xyz', degrees=True)[2]
-
-        if self.viz_lidar=="true":
-            cv2.imshow('bev_lidar', bev_lidar_image)
-            cv2.waitKey(1)
 
         # get joystick data
         joy_axes = joystick.axes
@@ -173,6 +185,21 @@ class ListenRecordData:
                 [self.last_cmd_vel_callback.linear.x,
                  self.last_cmd_vel_callback.linear.y,
                  self.last_cmd_vel_callback.angular.z])
+
+        # display the stuff
+        if self.viz_lidar=="true":
+            bev_lidar_image = cv2.cvtColor(bev_lidar_image, cv2.COLOR_GRAY2BGR)
+            T_odom_robot = get_affine_matrix_quat(self.data['odom'][-1][0], self.data['odom'][-1][1], self.data['odom'][-1][2])
+            for goal in self.data['human_expert_odom'][-1][:200]:
+                T_odom_goal = get_affine_matrix_quat(goal[0], goal[1], goal[2])
+                T_robot_goal = np.matmul(np.linalg.pinv(T_odom_robot), T_odom_goal)
+                T_c_f = [T_robot_goal[0, 2], T_robot_goal[1, 2]]
+                t_f_pixels = [int(T_c_f[0] / 0.05) + 200, int(-T_c_f[1] / 0.05) + 200]
+                bev_lidar_image = cv2.circle(bev_lidar_image, (t_f_pixels[0], t_f_pixels[1]), 1, (0, 0, 255), -1)
+
+            cv2.imshow('bev_lidar', bev_lidar_image)
+            cv2.waitKey(1)
+
 
     def path_callback(self, msg):
         """
@@ -284,7 +311,7 @@ if __name__ == '__main__':
         if len(time_stamps) == 0:
             time_stamps.append(0.0)
             start_time = t.to_sec()
-        else: time_stamps.append(t.to_sec() - start_time)
+        else: time_stamps.append(t.to_sec())
     cprint('Done reading odom messages from the rosbag !!!', 'green', attrs=['bold'])
 
     if not os.path.exists(rosbag_path):
