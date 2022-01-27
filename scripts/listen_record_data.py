@@ -120,7 +120,7 @@ class ListenRecordData:
             odom_k = self.recorded_odom_msgs[future_index]
             dist = np.linalg.norm(np.array([odom.pose.pose.position.x, odom.pose.pose.position.y]) -
                                   np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
-            if dist > 5.0: break
+            if dist > 10.0: break
 
         if self.n % 3 == 0:
             goal = self.convert_odom_to_posestamped_goal(odom_k)
