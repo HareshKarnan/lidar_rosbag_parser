@@ -175,7 +175,6 @@ class ListenRecordData:
 
         # append to the data
         self.data['pose'].append([x, y, yaw])
-        # self.data['bevlidarimg'].append(bev_lidar_image)
         self.data['joystick'].append([linear_x, linear_y, angular_z])
 
         # save BEVLidar images to disk instead of pkl file
@@ -277,18 +276,47 @@ class ListenRecordData:
         self.odom_msgs[-1] = np.array([tmp.linear.x, tmp.linear.y, tmp.linear.z,
                                        tmp.angular.x, tmp.angular.y, tmp.angular.z])
 
-    def save_data(self, pkl_path, lidar_path):
+    def save_data(self, rosbag_path, save_data_path):
+        """
+        save processed ros bag as a pkl file and directory of bev lidar images
+
+        rosbag_path: path to the rosbag that was processed
+        save_data_path: location to place pkl file and bev lidar images directory
+
+        example:
+            rosbag_path: /home/abhinavchadaga/BCSAN/train.bag
+            save_data_path: /home/abhinavchadaga/BCSAN/data
+
+            BCSAN:
+                - data:
+                    - train.pkl
+                    - train_data
+                        - 1.png
+                        - 2.png
+                        ...
+
+        """
         print('Number of data points : ', len(self.data['pose']))
         cprint('Distance travelled : ' +
                str(self.distance_travelled), 'green', attrs=['bold'])
+
+        # generate path to pkl file and lidar data from
+        # the rosbag file path and the save_data_path
+        pkl_path = os.path.join(save_data_path, rosbag_path.split(
+        '/')[-1].replace('.bag', '_data.pkl'))
+        lidar_path = os.path.join(save_data_path, rosbag_path.split(
+        '/')[-1].replace('.bag', '_data'))
+
         print('Saving pkl to : ', pkl_path)
         pickle.dump(self.data, open(pkl_path, 'wb'))
 
         print('Saving lidar images to: ', lidar_path)
 
+        # create lidar data directory if necessary
         if not os.path.exists(lidar_path):
             os.makedirs(lidar_path)
 
+        # write out each bev lidar image
         for timestamp, lidar_img in self.lidar_imgs.items():
             file_path = os.path.join(
                 lidar_path, '{}.png'.format(timestamp))
@@ -379,11 +407,6 @@ if __name__ == '__main__':
     rosbag_play_process = subprocess.Popen(
         ['rosbag', 'play', rosbag_path, '-r', '1.0', '--clock'])
 
-    pkl_path = os.path.join(save_data_path, rosbag_path.split(
-        '/')[-1].replace('.bag', '_data.pkl'))
-    lidar_path = os.path.join(save_data_path, rosbag_path.split(
-        '/')[-1].replace('.bag', '_data'))
-
     datarecorder = ListenRecordData(rosbag_play_process=rosbag_play_process,
                                     config_path=config_file_path,
                                     viz_lidar=viz_lidar,
@@ -394,7 +417,7 @@ if __name__ == '__main__':
         # check if the python process is still running
         if rosbag_play_process.poll() is not None:
             print('rosbag process has stopped')
-            datarecorder.save_data(pkl_path, lidar_path)
+            datarecorder.save_data(rosbag_path, save_data_path)
             print('Data was saved in :: ', save_data_path)
             exit(0)
 
