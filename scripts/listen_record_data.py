@@ -40,11 +40,14 @@ def get_affine_matrix_quat(x, y, quaternion):
 
 
 class ListenRecordData:
-    def __init__(self, rosbag_play_process, config_path, viz_lidar, odom_msgs=None, time_stamps=None):
+    def __init__(self, rosbag_play_process, config_path, viz_lidar, odom_msgs=None, odom_time_stamps=None, joy_msgs=None, joy_time_stamps=None):
         self.rosbag_play_process = rosbag_play_process
         self.data = []
         self.recorded_odom_msgs = odom_msgs
-        self.recorded_time_stamps = np.asarray(time_stamps)
+        self.recorded_odom_time_stamps = np.asarray(odom_time_stamps)
+        self.recorded_joy_msgs = joy_msgs
+        self.recorded_joy_time_stamps = joy_time_stamps
+
 
         lidar = message_filters.Subscriber('/velodyne_points', PointCloud2)
         # odom = message_filters.Subscriber('/aft_mapped_to_init', Odometry)
@@ -64,11 +67,12 @@ class ListenRecordData:
         self.pub_goal = rospy.Publisher(
             '/move_base_simple/goal', PoseStamped, queue_size=1)
 
-        # self.data = {'pose': [], 'bevlidarimg': [], 'joystick': [], 'move_base_path': [], 'human_expert_odom': [],
-        #              'odom': [], 'move_base_cmd_vel': []}
-        self.data = {'pose': [], 'joystick': [], 'move_base_path': [], 'human_expert_odom': [],
+        # data to be encoded in pickle file
+        self.data = {'pose': [], 'joystick': [], 'future_joystick': [], 'move_base_path': [], 'human_expert_odom': [],
                      'odom': [], 'move_base_cmd_vel': []}
+        # bev_lidar_images to be written to disk
         self.lidar_imgs = {}
+
 
         if self.config['robot_name'] == "spot":
             cprint('Processing rosbag collected on the SPOT',
@@ -84,6 +88,7 @@ class ListenRecordData:
             cprint('Processing rosbag collected on the JACKAL',
                    'green', attrs=['bold'])
 
+        # handle lidar data
         self.bevlidar_handler = BEVLidar(x_range=(-self.config['LIDAR_RANGE_METERS'], self.config['LIDAR_RANGE_METERS']),
                                          y_range=(-self.config['LIDAR_RANGE_METERS'],
                                                   self.config['LIDAR_RANGE_METERS']),
@@ -120,23 +125,26 @@ class ListenRecordData:
         # get the time of the current message in seconds
         if self.start_time is None:
             self.start_time = lidar.header.stamp.to_sec()
-        current_time = lidar.header.stamp.to_sec()
+        current_time = lidar.header.stamp.to_sec() # current time is based on the current lidar img
 
         self.n += 1
 
         # publish the goal
         # find the closest message index in the recorded odom messages
-        closest_index = np.searchsorted(
-            self.recorded_time_stamps, current_time)+1
-        future_index = min(closest_index + 30,
+        odom_closest_index = np.searchsorted(
+            self.recorded_odom_time_stamps, current_time)+1
+        odom_future_index = min(odom_closest_index + 30,
                            len(self.recorded_odom_msgs) - 1)
-        odom_k = self.recorded_odom_msgs[future_index]
-        for future_index in range(closest_index, len(self.recorded_odom_msgs)):
-            odom_k = self.recorded_odom_msgs[future_index]
+        odom_k = self.recorded_odom_msgs[odom_future_index]
+        for odom_future_index in range(odom_closest_index, len(self.recorded_odom_msgs)):
+            odom_k = self.recorded_odom_msgs[odom_future_index]
             dist = np.linalg.norm(np.array([odom.pose.pose.position.x, odom.pose.pose.position.y]) -
                                   np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
             if dist > 10.0:
                 break
+
+        joy_closest_index = np.searchsorted(self.recorded_joy_time_stamps, current_time) + 1
+         
 
         if self.n % 3 == 0:
             goal = self.convert_odom_to_posestamped_goal(odom_k)
@@ -194,7 +202,7 @@ class ListenRecordData:
 
         # save the human expert path
         human_expert_path = self.odom_msg_list_to_list(
-            self.recorded_odom_msgs[closest_index:future_index])
+            self.recorded_odom_msgs[odom_closest_index:odom_future_index])
         self.data['human_expert_odom'].append(human_expert_path)
         self.data['odom'].append([odom.pose.pose.position.x, odom.pose.pose.position.y,
                                  [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
@@ -303,9 +311,9 @@ class ListenRecordData:
         # generate path to pkl file and lidar data from
         # the rosbag file path and the save_data_path
         pkl_path = os.path.join(save_data_path, rosbag_path.split(
-        '/')[-1].replace('.bag', '_data.pkl'))
+            '/')[-1].replace('.bag', '_data.pkl'))
         lidar_path = os.path.join(save_data_path, rosbag_path.split(
-        '/')[-1].replace('.bag', '_data'))
+            '/')[-1].replace('.bag', '_data'))
 
         print('Saving pkl to : ', pkl_path)
         pickle.dump(self.data, open(pkl_path, 'wb'))
@@ -370,26 +378,13 @@ if __name__ == '__main__':
     save_data_path = rospy.get_param('save_data_path')
     viz_lidar = rospy.get_param('viz_lidar')
 
-    # parse the rosbag file and extract the odometry data
-    cprint('First reading all the odom messages and timestamps from the rosbag',
-           'green', attrs=['bold'])
-    rosbag = rosbag.Bag(rosbag_path)
-    # read all the odometry messages
-    odom_msgs, time_stamps = [], []
-    for topic, msg, t in tqdm(rosbag.read_messages(topics=['/odom'])):
-        odom_msgs.append(msg)
-        if len(time_stamps) == 0:
-            time_stamps.append(0.0)
-            start_time = t.to_sec()
-        else:
-            time_stamps.append(t.to_sec())
-    cprint('Done reading odom messages from the rosbag !!!',
-           'green', attrs=['bold'])
-
+    # check if the rosbag path exists
     if not os.path.exists(rosbag_path):
         cprint('rosbag path : ' + str(rosbag_path), 'red', attrs=['bold'])
         raise FileNotFoundError('ROS bag file not found')
 
+    # check if the save_data_path exists
+    # create directory if needed
     if not os.path.exists(save_data_path):
         cprint('Creating directory : ' +
                save_data_path, 'blue', attrs=['bold'])
@@ -397,6 +392,33 @@ if __name__ == '__main__':
     else:
         cprint('Directory already exists : ' +
                save_data_path, 'blue', attrs=['bold'])
+
+    # parse the rosbag file and extract the odometry data
+    cprint('First reading all the odom messages and timestamps from the rosbag',
+           'green', attrs=['bold'])
+    rosbag = rosbag.Bag(rosbag_path)
+    # read all the odometry messages
+    odom_msgs, odom_time_stamps = [], []
+    for topic, msg, t in tqdm(rosbag.read_messages(topics=['/odom'])):
+        odom_msgs.append(msg)
+        if len(odom_time_stamps) == 0:
+            odom_time_stamps.append(0.0)
+            start_time = t.to_sec()
+        else:
+            odom_time_stamps.append(t.to_sec())
+    cprint('Done reading odom messages from the rosbag !!!',
+           color='green', attrs=['bold'])
+
+    # read all the joystick messages and timestamps
+    joy_msgs, joy_time_stamps = [], []
+    for _, msg, t in tqdm(rosbag.read_messages(topics=['/joystick'])):
+        joy_msgs.append(msg)
+        if len(joy_time_stamps) == 0:
+            joy_time_stamps.append(0.0)
+        else:
+            joy_time_stamps.append(t.to_sec())
+    cprint('Done reading joystick messages and timestamps',
+           color='green', attrs=['bold'])
 
     # find root of the ros node and config file path
     package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -411,7 +433,7 @@ if __name__ == '__main__':
                                     config_path=config_file_path,
                                     viz_lidar=viz_lidar,
                                     odom_msgs=odom_msgs,
-                                    time_stamps=time_stamps)
+                                    odom_time_stamps=odom_time_stamps)
 
     while not rospy.is_shutdown():
         # check if the python process is still running
