@@ -20,6 +20,8 @@ from parse_utils import BEVLidar
 import yaml
 import rosbag
 import tf2_ros
+import math
+import warnings
 
 
 def get_affine_mat(x, y, theta):
@@ -40,14 +42,13 @@ def get_affine_matrix_quat(x, y, quaternion):
 
 
 class ListenRecordData:
-    def __init__(self, rosbag_play_process, config_path, viz_lidar, odom_msgs=None, odom_time_stamps=None, joy_msgs=None, joy_time_stamps=None):
+    def __init__(self, rosbag_play_process, config_path, viz_lidar, joy_msgs, joy_time_stamps, odom_msgs=None, odom_time_stamps=None,):
         self.rosbag_play_process = rosbag_play_process
         self.data = []
         self.recorded_odom_msgs = odom_msgs
         self.recorded_odom_time_stamps = np.asarray(odom_time_stamps)
         self.recorded_joy_msgs = joy_msgs
         self.recorded_joy_time_stamps = joy_time_stamps
-
 
         lidar = message_filters.Subscriber('/velodyne_points', PointCloud2)
         # odom = message_filters.Subscriber('/aft_mapped_to_init', Odometry)
@@ -72,7 +73,6 @@ class ListenRecordData:
                      'odom': [], 'move_base_cmd_vel': []}
         # bev_lidar_images to be written to disk
         self.lidar_imgs = {}
-
 
         if self.config['robot_name'] == "spot":
             cprint('Processing rosbag collected on the SPOT',
@@ -125,7 +125,8 @@ class ListenRecordData:
         # get the time of the current message in seconds
         if self.start_time is None:
             self.start_time = lidar.header.stamp.to_sec()
-        current_time = lidar.header.stamp.to_sec() # current time is based on the current lidar img
+        # current time is based on the current lidar img
+        current_time = lidar.header.stamp.to_sec()
 
         self.n += 1
 
@@ -134,7 +135,7 @@ class ListenRecordData:
         odom_closest_index = np.searchsorted(
             self.recorded_odom_time_stamps, current_time)+1
         odom_future_index = min(odom_closest_index + 30,
-                           len(self.recorded_odom_msgs) - 1)
+                                len(self.recorded_odom_msgs) - 1)
         odom_k = self.recorded_odom_msgs[odom_future_index]
         for odom_future_index in range(odom_closest_index, len(self.recorded_odom_msgs)):
             odom_k = self.recorded_odom_msgs[odom_future_index]
@@ -142,9 +143,6 @@ class ListenRecordData:
                                   np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
             if dist > 10.0:
                 break
-
-        joy_closest_index = np.searchsorted(self.recorded_joy_time_stamps, current_time) + 1
-         
 
         if self.n % 3 == 0:
             goal = self.convert_odom_to_posestamped_goal(odom_k)
@@ -181,9 +179,30 @@ class ListenRecordData:
         angular_z = self.joystickValue(
             joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
 
+        joy_closest_index = np.searchsorted(
+            self.recorded_joy_time_stamps, current_time) + 1
+        # joystick has a publishing frequency of 60 hz
+        # forward five seconds is 60 hz * 5 sec = 300 indices
+        five_seconds = 300
+        joy_future_index = joy_closest_index + five_seconds
+
+        # list of 300 tuples
+        # tuple format (lin_x, lin_y, ang_z)
+        future_joystick_data = []
+        for i in range(joy_closest_index, joy_future_index):
+            joy_axes = self.recorded_joy_msgs[i].axes
+            f_linear_x = self.joystickValue(
+                joy_axes[self.config['kXAxis']], -self.config['kMaxLinearSpeed'])
+            f_linear_y = self.joystickValue(
+                joy_axes[self.config['kYAxis']], -self.config['kMaxLinearSpeed'])
+            f_angular_z = self.joystickValue(
+                joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
+            future_joystick_data.append((f_linear_x, f_linear_y, f_angular_z))
+
         # append to the data
         self.data['pose'].append([x, y, yaw])
         self.data['joystick'].append([linear_x, linear_y, angular_z])
+        self.data['future_joystick'].append(future_joystick_data)
 
         # save BEVLidar images to disk instead of pkl file
         self.lidar_imgs[self.n] = bev_lidar_image
@@ -397,6 +416,9 @@ if __name__ == '__main__':
     cprint('First reading all the odom messages and timestamps from the rosbag',
            'green', attrs=['bold'])
     rosbag = rosbag.Bag(rosbag_path)
+    info_dict = yaml.safe_load(rosbag._get_yaml_info())
+    duration = info_dict['end'] - info_dict['start']
+
     # read all the odometry messages
     odom_msgs, odom_time_stamps = [], []
     for topic, msg, t in tqdm(rosbag.read_messages(topics=['/odom'])):
@@ -410,6 +432,8 @@ if __name__ == '__main__':
            color='green', attrs=['bold'])
 
     # read all the joystick messages and timestamps
+    cprint('Now reading all the joystick messages and timestamps from the rosbag',
+           'green', attrs=['bold'])
     joy_msgs, joy_time_stamps = [], []
     for _, msg, t in tqdm(rosbag.read_messages(topics=['/joystick'])):
         joy_msgs.append(msg)
@@ -426,14 +450,21 @@ if __name__ == '__main__':
         package_root, 'config/'+str(robot_name)+'.yaml')
 
     # start a subprocess to run the rosbag
+    # rosbag_play_process = subprocess.Popen(
+    #     ['rosbag', 'play', rosbag_path, '-r', '1.0', '--clock'])
+    play_duration = str(int(math.floor(duration - 5)))
+    print('play duration: {}'.format(play_duration))
+
     rosbag_play_process = subprocess.Popen(
-        ['rosbag', 'play', rosbag_path, '-r', '1.0', '--clock'])
+        ['rosbag', 'play', rosbag_path, '-r', '1.0', '--clock', '-u', play_duration])
 
     datarecorder = ListenRecordData(rosbag_play_process=rosbag_play_process,
                                     config_path=config_file_path,
                                     viz_lidar=viz_lidar,
                                     odom_msgs=odom_msgs,
-                                    odom_time_stamps=odom_time_stamps)
+                                    odom_time_stamps=odom_time_stamps,
+                                    joy_msgs=joy_msgs,
+                                    joy_time_stamps=joy_time_stamps)
 
     while not rospy.is_shutdown():
         # check if the python process is still running
