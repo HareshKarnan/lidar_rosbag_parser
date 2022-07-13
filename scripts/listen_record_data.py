@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import numpy as np
 import time
@@ -8,7 +8,6 @@ from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 import rospy
 import cv2
-import matplotlib.pyplot as plt
 import message_filters
 import os
 import pickle
@@ -60,7 +59,7 @@ class ListenRecordData:
         ts.registerCallback(self.callback)
 
         # read the config file
-        self.config = yaml.load(open(config_path, 'r'))
+        self.config = yaml.safe_load(open(config_path, 'r'))
         print('Config file loaded!')
         print(self.config)
 
