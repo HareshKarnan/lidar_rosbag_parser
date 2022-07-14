@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import numpy as np
 import time
@@ -8,7 +8,6 @@ from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 import rospy
 import cv2
-import matplotlib.pyplot as plt
 import message_filters
 import os
 import pickle
@@ -20,6 +19,8 @@ from parse_utils import BEVLidar
 import yaml
 import rosbag
 import tf2_ros
+import math
+import warnings
 
 
 def get_affine_mat(x, y, theta):
@@ -40,11 +41,13 @@ def get_affine_matrix_quat(x, y, quaternion):
 
 
 class ListenRecordData:
-    def __init__(self, rosbag_play_process, config_path, viz_lidar, odom_msgs=None, time_stamps=None):
+    def __init__(self, rosbag_play_process, config_path, viz_lidar, joy_msgs, joy_time_stamps, odom_msgs=None, odom_time_stamps=None,):
         self.rosbag_play_process = rosbag_play_process
         self.data = []
         self.recorded_odom_msgs = odom_msgs
-        self.recorded_time_stamps = np.asarray(time_stamps)
+        self.recorded_odom_time_stamps = np.asarray(odom_time_stamps)
+        self.recorded_joy_msgs = joy_msgs
+        self.recorded_joy_time_stamps = joy_time_stamps
 
         lidar = message_filters.Subscriber('/velodyne_points', PointCloud2)
         # odom = message_filters.Subscriber('/aft_mapped_to_init', Odometry)
@@ -56,7 +59,7 @@ class ListenRecordData:
         ts.registerCallback(self.callback)
 
         # read the config file
-        self.config = yaml.load(open(config_path, 'r'))
+        self.config = yaml.safe_load(open(config_path, 'r'))
         print('Config file loaded!')
         print(self.config)
 
@@ -64,10 +67,10 @@ class ListenRecordData:
         self.pub_goal = rospy.Publisher(
             '/move_base_simple/goal', PoseStamped, queue_size=1)
 
-        # self.data = {'pose': [], 'bevlidarimg': [], 'joystick': [], 'move_base_path': [], 'human_expert_odom': [],
-        #              'odom': [], 'move_base_cmd_vel': []}
-        self.data = {'pose': [], 'joystick': [], 'move_base_path': [], 'human_expert_odom': [],
+        # data to be encoded in pickle file
+        self.data = {'pose': [], 'joystick': [], 'future_joystick': [], 'move_base_path': [], 'human_expert_odom': [],
                      'odom': [], 'move_base_cmd_vel': []}
+        # bev_lidar_images to be written to disk
         self.lidar_imgs = {}
 
         if self.config['robot_name'] == "spot":
@@ -84,6 +87,7 @@ class ListenRecordData:
             cprint('Processing rosbag collected on the JACKAL',
                    'green', attrs=['bold'])
 
+        # handle lidar data
         self.bevlidar_handler = BEVLidar(x_range=(-self.config['LIDAR_RANGE_METERS'], self.config['LIDAR_RANGE_METERS']),
                                          y_range=(-self.config['LIDAR_RANGE_METERS'],
                                                   self.config['LIDAR_RANGE_METERS']),
@@ -120,19 +124,20 @@ class ListenRecordData:
         # get the time of the current message in seconds
         if self.start_time is None:
             self.start_time = lidar.header.stamp.to_sec()
+        # current time is based on the current lidar img
         current_time = lidar.header.stamp.to_sec()
 
         self.n += 1
 
         # publish the goal
         # find the closest message index in the recorded odom messages
-        closest_index = np.searchsorted(
-            self.recorded_time_stamps, current_time)+1
-        future_index = min(closest_index + 30,
-                           len(self.recorded_odom_msgs) - 1)
-        odom_k = self.recorded_odom_msgs[future_index]
-        for future_index in range(closest_index, len(self.recorded_odom_msgs)):
-            odom_k = self.recorded_odom_msgs[future_index]
+        odom_closest_index = np.searchsorted(
+            self.recorded_odom_time_stamps, current_time)+1
+        odom_future_index = min(odom_closest_index + 30,
+                                len(self.recorded_odom_msgs) - 1)
+        odom_k = self.recorded_odom_msgs[odom_future_index]
+        for odom_future_index in range(odom_closest_index, len(self.recorded_odom_msgs)):
+            odom_k = self.recorded_odom_msgs[odom_future_index]
             dist = np.linalg.norm(np.array([odom.pose.pose.position.x, odom.pose.pose.position.y]) -
                                   np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
             if dist > 10.0:
@@ -173,10 +178,31 @@ class ListenRecordData:
         angular_z = self.joystickValue(
             joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
 
+        joy_closest_index = np.searchsorted(
+            self.recorded_joy_time_stamps, current_time) + 1
+        # joystick has a publishing frequency of 60 hz
+        # forward five seconds is 60 hz * 5 sec = 300 indices
+        offset = 5
+        joy_future_index = joy_closest_index + (offset * 60)
+
+        # list of 300 tuples
+        # tuple format (lin_x, lin_y, ang_z)
+        future_joystick_data = []
+        for i in range(joy_closest_index, joy_future_index):
+            joy_axes = self.recorded_joy_msgs[i].axes
+            f_linear_x = self.joystickValue(
+                joy_axes[self.config['kXAxis']], -self.config['kMaxLinearSpeed'])
+            f_linear_y = self.joystickValue(
+                joy_axes[self.config['kYAxis']], -self.config['kMaxLinearSpeed'])
+            f_angular_z = self.joystickValue(
+                joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
+            future_joystick_data.append(
+                (f_linear_x, f_linear_y, f_angular_z))
+
         # append to the data
         self.data['pose'].append([x, y, yaw])
-        # self.data['bevlidarimg'].append(bev_lidar_image)
         self.data['joystick'].append([linear_x, linear_y, angular_z])
+        self.data['future_joystick'].append(future_joystick_data)
 
         # save BEVLidar images to disk instead of pkl file
         self.lidar_imgs[self.n] = bev_lidar_image
@@ -195,7 +221,7 @@ class ListenRecordData:
 
         # save the human expert path
         human_expert_path = self.odom_msg_list_to_list(
-            self.recorded_odom_msgs[closest_index:future_index])
+            self.recorded_odom_msgs[odom_closest_index:odom_future_index])
         self.data['human_expert_odom'].append(human_expert_path)
         self.data['odom'].append([odom.pose.pose.position.x, odom.pose.pose.position.y,
                                  [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
@@ -277,18 +303,47 @@ class ListenRecordData:
         self.odom_msgs[-1] = np.array([tmp.linear.x, tmp.linear.y, tmp.linear.z,
                                        tmp.angular.x, tmp.angular.y, tmp.angular.z])
 
-    def save_data(self, pkl_path, lidar_path):
+    def save_data(self, rosbag_path, save_data_path):
+        """
+        save processed ros bag as a pkl file and directory of bev lidar images
+
+        rosbag_path: path to the rosbag that was processed
+        save_data_path: location to place pkl file and bev lidar images directory
+
+        example:
+            rosbag_path: /home/abhinavchadaga/BCSAN/train.bag
+            save_data_path: /home/abhinavchadaga/BCSAN/data
+
+            BCSAN:
+                - data:
+                    - train.pkl
+                    - train_data
+                        - 1.png
+                        - 2.png
+                        ...
+
+        """
         print('Number of data points : ', len(self.data['pose']))
         cprint('Distance travelled : ' +
                str(self.distance_travelled), 'green', attrs=['bold'])
+
+        # generate path to pkl file and lidar data from
+        # the rosbag file path and the save_data_path
+        pkl_path = os.path.join(save_data_path, rosbag_path.split(
+            '/')[-1].replace('.bag', '_data.pkl'))
+        lidar_path = os.path.join(save_data_path, rosbag_path.split(
+            '/')[-1].replace('.bag', '_data'))
+
         print('Saving pkl to : ', pkl_path)
         pickle.dump(self.data, open(pkl_path, 'wb'))
 
         print('Saving lidar images to: ', lidar_path)
 
+        # create lidar data directory if necessary
         if not os.path.exists(lidar_path):
             os.makedirs(lidar_path)
 
+        # write out each bev lidar image
         for timestamp, lidar_img in self.lidar_imgs.items():
             file_path = os.path.join(
                 lidar_path, '{}.png'.format(timestamp))
@@ -342,26 +397,13 @@ if __name__ == '__main__':
     save_data_path = rospy.get_param('save_data_path')
     viz_lidar = rospy.get_param('viz_lidar')
 
-    # parse the rosbag file and extract the odometry data
-    cprint('First reading all the odom messages and timestamps from the rosbag',
-           'green', attrs=['bold'])
-    rosbag = rosbag.Bag(rosbag_path)
-    # read all the odometry messages
-    odom_msgs, time_stamps = [], []
-    for topic, msg, t in tqdm(rosbag.read_messages(topics=['/odom'])):
-        odom_msgs.append(msg)
-        if len(time_stamps) == 0:
-            time_stamps.append(0.0)
-            start_time = t.to_sec()
-        else:
-            time_stamps.append(t.to_sec())
-    cprint('Done reading odom messages from the rosbag !!!',
-           'green', attrs=['bold'])
-
+    # check if the rosbag path exists
     if not os.path.exists(rosbag_path):
         cprint('rosbag path : ' + str(rosbag_path), 'red', attrs=['bold'])
         raise FileNotFoundError('ROS bag file not found')
 
+    # check if the save_data_path exists
+    # create directory if needed
     if not os.path.exists(save_data_path):
         cprint('Creating directory : ' +
                save_data_path, 'blue', attrs=['bold'])
@@ -370,31 +412,66 @@ if __name__ == '__main__':
         cprint('Directory already exists : ' +
                save_data_path, 'blue', attrs=['bold'])
 
+    # parse the rosbag file and extract the odometry data
+    cprint('First reading all the odom messages and timestamps from the rosbag',
+           'green', attrs=['bold'])
+    rosbag = rosbag.Bag(rosbag_path)
+    info_dict = yaml.safe_load(rosbag._get_yaml_info())
+    duration = info_dict['end'] - info_dict['start']
+    print('rosbag_length: ', duration)
+
+    # read all the odometry messages
+    odom_msgs, odom_time_stamps = [], []
+    for topic, msg, t in tqdm(rosbag.read_messages(topics=['/odom'])):
+        odom_msgs.append(msg)
+        if len(odom_time_stamps) == 0:
+            odom_time_stamps.append(0.0)
+            start_time = t.to_sec()
+        else:
+            odom_time_stamps.append(t.to_sec())
+    cprint('Done reading odom messages from the rosbag !!!',
+           color='green', attrs=['bold'])
+
+    # read all the joystick messages and timestamps
+    cprint('Now reading all the joystick messages and timestamps from the rosbag',
+           'green', attrs=['bold'])
+    joy_msgs, joy_time_stamps = [], []
+    for _, msg, t in tqdm(rosbag.read_messages(topics=['/joystick'])):
+        joy_msgs.append(msg)
+        if len(joy_time_stamps) == 0:
+            joy_time_stamps.append(0.0)
+        else:
+            joy_time_stamps.append(t.to_sec())
+    cprint('Done reading joystick messages and timestamps',
+           color='green', attrs=['bold'])
+
     # find root of the ros node and config file path
     package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     config_file_path = os.path.join(
         package_root, 'config/'+str(robot_name)+'.yaml')
 
     # start a subprocess to run the rosbag
-    rosbag_play_process = subprocess.Popen(
-        ['rosbag', 'play', rosbag_path, '-r', '1.0', '--clock'])
+    # rosbag_play_process = subprocess.Popen(
+    #     ['rosbag', 'play', rosbag_path, '-r', '1.0', '--clock'])
+    play_duration = str(int(math.floor(duration) - 6))
+    print('play duration: {}'.format(play_duration))
 
-    pkl_path = os.path.join(save_data_path, rosbag_path.split(
-        '/')[-1].replace('.bag', '_data.pkl'))
-    lidar_path = os.path.join(save_data_path, rosbag_path.split(
-        '/')[-1].replace('.bag', '_data'))
+    rosbag_play_process = subprocess.Popen(
+        ['rosbag', 'play', rosbag_path, '-r', '1.0', '--clock', '-u', play_duration])
 
     datarecorder = ListenRecordData(rosbag_play_process=rosbag_play_process,
                                     config_path=config_file_path,
                                     viz_lidar=viz_lidar,
                                     odom_msgs=odom_msgs,
-                                    time_stamps=time_stamps)
+                                    odom_time_stamps=odom_time_stamps,
+                                    joy_msgs=joy_msgs,
+                                    joy_time_stamps=joy_time_stamps)
 
     while not rospy.is_shutdown():
         # check if the python process is still running
         if rosbag_play_process.poll() is not None:
             print('rosbag process has stopped')
-            datarecorder.save_data(pkl_path, lidar_path)
+            datarecorder.save_data(rosbag_path, save_data_path)
             print('Data was saved in :: ', save_data_path)
             exit(0)
 
