@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 import numpy as np
 import time
@@ -20,7 +20,6 @@ import yaml
 import rosbag
 import tf2_ros
 import math
-import warnings
 
 
 def get_affine_mat(x, y, theta):
@@ -182,10 +181,13 @@ class ListenRecordData:
             self.recorded_joy_time_stamps, current_time) + 1
         # joystick has a publishing frequency of 60 hz
         # forward five seconds is 60 hz * 5 sec = 300 indices
-        offset = 5
-        joy_future_index = joy_closest_index + (offset * 60)
+        # offset = 5
+        # joy_future_index = joy_closest_index + (offset * 60)
+        joy_future_index = np.searchsorted(
+            self.recorded_joy_time_stamps, self.recorded_odom_time_stamps[odom_future_index])
 
-        # list of 300 tuples
+        # list of tuples representing joystick commands
+        # up until 10 meter goal
         # tuple format (lin_x, lin_y, ang_z)
         future_joystick_data = []
         for i in range(joy_closest_index, joy_future_index):
@@ -197,7 +199,7 @@ class ListenRecordData:
             f_angular_z = self.joystickValue(
                 joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
             future_joystick_data.append(
-                (f_linear_x, f_linear_y, f_angular_z))
+                [f_linear_x, f_linear_y, f_angular_z])
 
         # append to the data
         self.data['pose'].append([x, y, yaw])
@@ -417,8 +419,6 @@ if __name__ == '__main__':
            'green', attrs=['bold'])
     rosbag = rosbag.Bag(rosbag_path)
     info_dict = yaml.safe_load(rosbag._get_yaml_info())
-    duration = info_dict['end'] - info_dict['start']
-    print('rosbag_length: ', duration)
 
     # read all the odometry messages
     odom_msgs, odom_time_stamps = [], []
@@ -453,6 +453,8 @@ if __name__ == '__main__':
     # start a subprocess to run the rosbag
     # rosbag_play_process = subprocess.Popen(
     #     ['rosbag', 'play', rosbag_path, '-r', '1.0', '--clock'])
+    duration = info_dict['end'] - info_dict['start']
+    print('rosbag_length: ', duration)
     play_duration = str(int(math.floor(duration) - 6))
     print('play duration: {}'.format(play_duration))
 
