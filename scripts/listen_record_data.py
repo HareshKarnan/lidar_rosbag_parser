@@ -1,10 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python2
 
 import numpy as np
 import time
 import sensor_msgs.point_cloud2 as pc2
 from sensor_msgs.msg import PointCloud2, Joy
-from nav_msgs.msg import Odometry, Path
+from nav_msgs.msg import Odometry, Path, OccupancyGrid
 from geometry_msgs.msg import PoseStamped, TransformStamped, Twist
 import rospy
 import cv2
@@ -18,6 +18,8 @@ from tqdm import tqdm
 from parse_utils import BEVLidar
 import yaml
 import rosbag
+# import sys
+# sys.path.remove('/opt/ros/melodic/lib/python2.7/dist-packages')
 import tf2_ros
 import math
 import warnings
@@ -91,8 +93,8 @@ class ListenRecordData:
         self.bevlidar_handler = BEVLidar(x_range=(-self.config['LIDAR_RANGE_METERS'], self.config['LIDAR_RANGE_METERS']),
                                          y_range=(-self.config['LIDAR_RANGE_METERS'],
                                                   self.config['LIDAR_RANGE_METERS']),
-                                         z_range=(-self.config['LIDAR_HEIGHT_METERS'],
-                                                  self.config['LIDAR_HEIGHT_METERS']),
+                                         z_range=(self.config['LIDAR_HEIGHT_MIN'],
+                                                  self.config['LIDAR_HEIGHT_MAX']),
                                          resolution=self.config['RESOLUTION'], threshold_z_range=False)
 
         self.distance_travelled = None
@@ -109,6 +111,9 @@ class ListenRecordData:
         self.last_cmd_vel_callback, self.last_cmd_vel_callback_path = None, None
         self.cmd_vel_sub = rospy.Subscriber(
             '/cmd_vel', Twist, self.cmd_vel_callback)
+        
+        # setup subscriber for OccupancyGrid
+        self.local_map_sub = rospy.Subscriber('/move_base/local_costmap/costmap', OccupancyGrid, self.local_costmap_callback)
 
         # setup tf2 publisher
         self.tf2_pub = tf2_ros.TransformBroadcaster()
@@ -131,16 +136,15 @@ class ListenRecordData:
 
         # publish the goal
         # find the closest message index in the recorded odom messages
-        odom_closest_index = np.searchsorted(
-            self.recorded_odom_time_stamps, current_time)+1
-        odom_future_index = min(odom_closest_index + 30,
-                                len(self.recorded_odom_msgs) - 1)
+        odom_closest_index = np.searchsorted(self.recorded_odom_time_stamps, current_time)+1
+        # odom_future_index = min(odom_closest_index + 500, len(self.recorded_odom_msgs) - 1)
+        odom_future_index = len(self.recorded_odom_msgs) - 1
         odom_k = self.recorded_odom_msgs[odom_future_index]
         for odom_future_index in range(odom_closest_index, len(self.recorded_odom_msgs)):
             odom_k = self.recorded_odom_msgs[odom_future_index]
             dist = np.linalg.norm(np.array([odom.pose.pose.position.x, odom.pose.pose.position.y]) -
                                   np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
-            if dist > 10.0:
+            if dist > 8.0:
                 break
 
         if self.n % 3 == 0:
@@ -188,16 +192,16 @@ class ListenRecordData:
         # list of 300 tuples
         # tuple format (lin_x, lin_y, ang_z)
         future_joystick_data = []
-        for i in range(joy_closest_index, joy_future_index):
-            joy_axes = self.recorded_joy_msgs[i].axes
-            f_linear_x = self.joystickValue(
-                joy_axes[self.config['kXAxis']], -self.config['kMaxLinearSpeed'])
-            f_linear_y = self.joystickValue(
-                joy_axes[self.config['kYAxis']], -self.config['kMaxLinearSpeed'])
-            f_angular_z = self.joystickValue(
-                joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
-            future_joystick_data.append(
-                (f_linear_x, f_linear_y, f_angular_z))
+        # for i in range(joy_closest_index, joy_future_index):
+        #     joy_axes = self.recorded_joy_msgs[i].axes
+        #     f_linear_x = self.joystickValue(
+        #         joy_axes[self.config['kXAxis']], -self.config['kMaxLinearSpeed'])
+        #     f_linear_y = self.joystickValue(
+        #         joy_axes[self.config['kYAxis']], -self.config['kMaxLinearSpeed'])
+        #     f_angular_z = self.joystickValue(
+        #         joy_axes[self.config['kRAxis']], -np.deg2rad(90.0), kDeadZone=0.0)
+        #     future_joystick_data.append(
+        #         (f_linear_x, f_linear_y, f_angular_z))
 
         # append to the data
         self.data['pose'].append([x, y, yaw])
@@ -241,7 +245,7 @@ class ListenRecordData:
             bev_lidar_image = cv2.cvtColor(bev_lidar_image, cv2.COLOR_GRAY2BGR)
             T_odom_robot = get_affine_matrix_quat(
                 self.data['odom'][-1][0], self.data['odom'][-1][1], self.data['odom'][-1][2])
-            for goal in self.data['human_expert_odom'][-1][:200]:
+            for goal in self.data['human_expert_odom'][-1]:
                 T_odom_goal = get_affine_matrix_quat(goal[0], goal[1], goal[2])
                 T_robot_goal = np.matmul(
                     np.linalg.pinv(T_odom_robot), T_odom_goal)
@@ -250,6 +254,16 @@ class ListenRecordData:
                               int(-T_c_f[1] / 0.05) + 200]
                 bev_lidar_image = cv2.circle(
                     bev_lidar_image, (t_f_pixels[0], t_f_pixels[1]), 1, (0, 0, 255), -1)
+            if self.data['move_base_path'][-1] is not None:
+                for goal in self.data['move_base_path'][-1]:
+                    T_odom_goal = get_affine_matrix_quat(goal[0], goal[1], goal[2])
+                    T_robot_goal = np.matmul(
+                        np.linalg.pinv(T_odom_robot), T_odom_goal)
+                    T_c_f = [T_robot_goal[0, 2], T_robot_goal[1, 2]]
+                    t_f_pixels = [int(T_c_f[0] / 0.05) + 200,
+                                int(-T_c_f[1] / 0.05) + 200]
+                    bev_lidar_image = cv2.circle(
+                        bev_lidar_image, (t_f_pixels[0], t_f_pixels[1]), 1, (255, 0, 0), -1)
 
             cv2.imshow('bev_lidar', bev_lidar_image)
             cv2.waitKey(1)
@@ -270,8 +284,12 @@ class ListenRecordData:
     def move_base_path_to_list(move_base_path):
         move_base_path_list = []
         for goal in move_base_path.poses:
-            move_base_path_list.append([goal.pose.position.x, goal.pose.position.y, [goal.pose.orientation.x,
-                                                                                     goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w]])
+            move_base_path_list.append([goal.pose.position.x, 
+                                        goal.pose.position.y, 
+                                        [goal.pose.orientation.x, 
+                                         goal.pose.orientation.y, 
+                                         goal.pose.orientation.z, 
+                                         goal.pose.orientation.w]])
         return move_base_path_list
 
     @staticmethod
@@ -283,8 +301,17 @@ class ListenRecordData:
                          odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]])
         return tmp
 
+    def local_costmap_callback(self, msg):
+        self.local_costmap = msg.data
+        # float32 cost map values between 0-1
+        self.local_costmap_img = np.reshape(self.local_costmap, (msg.info.height, msg.info.width))/100.0
+        # convert to uint8
+        self.local_costmap_img = (self.local_costmap_img*255.0).astype(np.uint8)
+        if self.viz_lidar:
+            cv2.imshow('local_costmap', self.local_costmap_img)
+            cv2.waitKey(1)
+    
     def odom_callback(self, odom):
-
         tf = TransformStamped()
         tf.header.stamp = rospy.Time.now()
         tf.header.frame_id = 'odom'
@@ -442,8 +469,7 @@ if __name__ == '__main__':
             joy_time_stamps.append(0.0)
         else:
             joy_time_stamps.append(t.to_sec())
-    cprint('Done reading joystick messages and timestamps',
-           color='green', attrs=['bold'])
+    cprint('Done reading joystick messages and timestamps', color='green', attrs=['bold'])
 
     # find root of the ros node and config file path
     package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -457,7 +483,7 @@ if __name__ == '__main__':
     print('play duration: {}'.format(play_duration))
 
     rosbag_play_process = subprocess.Popen(
-        ['rosbag', 'play', rosbag_path, '-r', '1.0', '--clock', '-u', play_duration])
+        ['rosbag', 'play', rosbag_path, '-r', '0.1', '--clock'])
 
     datarecorder = ListenRecordData(rosbag_play_process=rosbag_play_process,
                                     config_path=config_file_path,
