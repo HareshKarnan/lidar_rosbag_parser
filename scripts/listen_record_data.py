@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import numpy as np
 import time
@@ -15,7 +15,7 @@ from termcolor import cprint
 import subprocess
 from scipy.spatial.transform import Rotation as R
 from tqdm import tqdm
-from parse_utils import BEVLidar
+from parse_utils import BEVLidar, getOdom10Away
 import yaml
 import rosbag
 # import sys
@@ -50,7 +50,10 @@ class ListenRecordData:
         self.recorded_odom_time_stamps = np.asarray(odom_time_stamps)
         self.recorded_joy_msgs = joy_msgs
         self.recorded_joy_time_stamps = joy_time_stamps
+        self.human_expert_odom = []
+        self.move_base_paths = []
 
+       
         lidar = message_filters.Subscriber('/velodyne_points', PointCloud2)
         # odom = message_filters.Subscriber('/aft_mapped_to_init', Odometry)
         # joystick = message_filters.Subscriber('/bluetooth_teleop/joy', Joy)
@@ -74,6 +77,9 @@ class ListenRecordData:
                      'odom': [], 'move_base_cmd_vel': []}
         # bev_lidar_images to be written to disk
         self.lidar_imgs = {}
+
+        # costmap_imgs to be written to disk
+        self.costmap_imgs = {}
 
         if self.config['robot_name'] == "spot":
             cprint('Processing rosbag collected on the SPOT',
@@ -104,7 +110,7 @@ class ListenRecordData:
 
         # setup subscriber for global path
         self.path_sub = rospy.Subscriber(
-            '/move_base/TrajectoryPlannerROS/global_plan', Path, self.path_callback)
+            '/move_base/TrajectoryPlannerROS/global_plan', Path, self.path_callback, queue_size = 1)
         self.move_base_path = None
 
         # setup subscriber for cmd_vel
@@ -113,7 +119,8 @@ class ListenRecordData:
             '/cmd_vel', Twist, self.cmd_vel_callback)
         
         # setup subscriber for OccupancyGrid
-        self.local_map_sub = rospy.Subscriber('/move_base/local_costmap/costmap', OccupancyGrid, self.local_costmap_callback)
+        self.local_map_sub = rospy.Subscriber('/move_base/local_costmap/costmap', OccupancyGrid, self.local_costmap_callback, queue_size = 1)
+        self.local_costmap = None
 
         # setup tf2 publisher
         self.tf2_pub = tf2_ros.TransformBroadcaster()
@@ -140,12 +147,15 @@ class ListenRecordData:
         # odom_future_index = min(odom_closest_index + 500, len(self.recorded_odom_msgs) - 1)
         odom_future_index = len(self.recorded_odom_msgs) - 1
         odom_k = self.recorded_odom_msgs[odom_future_index]
+
+        # goal is a max of 10 away or end of recorded messages
         for odom_future_index in range(odom_closest_index, len(self.recorded_odom_msgs)):
             odom_k = self.recorded_odom_msgs[odom_future_index]
             dist = np.linalg.norm(np.array([odom.pose.pose.position.x, odom.pose.pose.position.y]) -
                                   np.array([odom_k.pose.pose.position.x, odom_k.pose.pose.position.y]))
-            if dist > 8.0:
+            if dist > 10.0:
                 break
+
 
         if self.n % 3 == 0:
             goal = self.convert_odom_to_posestamped_goal(odom_k)
@@ -203,6 +213,8 @@ class ListenRecordData:
         #     future_joystick_data.append(
         #         (f_linear_x, f_linear_y, f_angular_z))
 
+
+
         # append to the data
         self.data['pose'].append([x, y, yaw])
         self.data['joystick'].append([linear_x, linear_y, angular_z])
@@ -211,25 +223,36 @@ class ListenRecordData:
         # save BEVLidar images to disk instead of pkl file
         self.lidar_imgs[self.n] = bev_lidar_image
 
-        # # if using spot, then also record the past 1 sec odom data in self.data
-        if self.config['robot_name'] == "spot":
-            self.data['odom_history'].append(self.odom_msgs.flatten())
+        # save costmaps to disk instead of pkl file
+        if self.local_costmap is not None and (self.local_costmap_img_time - current_time) < 0.5:
+            local_costmap_img = self.costmap_msg_to_img(self.local_costmap,yaw)
+            if np.any(local_costmap_img):
+                self.costmap_imgs[self.n] = local_costmap_img
+        else:
+            cprint("costmap not available", "blue", attrs=["bold"])
 
         # save the move_base_path
         if self.move_base_path is not None and (self.move_base_path_time - current_time) < 0.5:
             move_base_path = self.move_base_path_to_list(self.move_base_path)
-            self.data['move_base_path'].append(move_base_path)
+            self.move_base_paths.append(move_base_path)
         else:
             cprint("move base path not available", "red", attrs=["bold"])
-            self.data['move_base_path'].append(None)
+            self.move_base_paths.append(None)
+        self.data['move_base_path'].append([])
+
+        # if using spot, then also record the past 1 sec odom data in self.data
+        if self.config['robot_name'] == "spot":
+            self.data['odom_history'].append(self.odom_msgs.flatten())
+
 
         # save the human expert path
         human_expert_path = self.odom_msg_list_to_list(
             self.recorded_odom_msgs[odom_closest_index:odom_future_index])
-        self.data['human_expert_odom'].append(human_expert_path)
+        self.human_expert_odom.append(human_expert_path)
+        self.data['human_expert_odom'].append([])
         self.data['odom'].append([odom.pose.pose.position.x, odom.pose.pose.position.y,
-                                 [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
-                                  odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]])
+                                [odom.pose.pose.orientation.x, odom.pose.pose.orientation.y,
+                                odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]])
 
         # save the cmd_vel msg
         if self.last_cmd_vel_callback_path is None:
@@ -237,36 +260,41 @@ class ListenRecordData:
         else:
             self.data['move_base_cmd_vel'].append(
                 [self.last_cmd_vel_callback.linear.x,
-                 self.last_cmd_vel_callback.linear.y,
-                 self.last_cmd_vel_callback.angular.z])
+                self.last_cmd_vel_callback.linear.y,
+                self.last_cmd_vel_callback.angular.z])
 
-        # display the stuff
-        if self.viz_lidar == "true":
-            bev_lidar_image = cv2.cvtColor(bev_lidar_image, cv2.COLOR_GRAY2BGR)
-            T_odom_robot = get_affine_matrix_quat(
-                self.data['odom'][-1][0], self.data['odom'][-1][1], self.data['odom'][-1][2])
-            for goal in self.data['human_expert_odom'][-1]:
+        bev_lidar_image = cv2.cvtColor(bev_lidar_image, cv2.COLOR_GRAY2BGR)
+        T_odom_robot = get_affine_matrix_quat(
+            self.data['odom'][-1][0], self.data['odom'][-1][1], self.data['odom'][-1][2])
+        for goal in self.human_expert_odom[-1]:
+            T_odom_goal = get_affine_matrix_quat(goal[0], goal[1], goal[2])
+            T_robot_goal = np.matmul(
+                np.linalg.pinv(T_odom_robot), T_odom_goal)
+            T_c_f = [T_robot_goal[0, 2], T_robot_goal[1, 2]]
+            t_f_pixels = [int(T_c_f[0] / 0.05) + 200,
+                            int(-T_c_f[1] / 0.05) + 200]
+            bev_lidar_image = cv2.circle(
+                bev_lidar_image, (t_f_pixels[0], t_f_pixels[1]), 1, (0, 0, 255), -1)
+            self.data['human_expert_odom'][-1].append([t_f_pixels[0], t_f_pixels[1]])
+        if self.move_base_paths[-1] is not None:
+            for goal in self.move_base_paths[-1]:
                 T_odom_goal = get_affine_matrix_quat(goal[0], goal[1], goal[2])
                 T_robot_goal = np.matmul(
                     np.linalg.pinv(T_odom_robot), T_odom_goal)
                 T_c_f = [T_robot_goal[0, 2], T_robot_goal[1, 2]]
                 t_f_pixels = [int(T_c_f[0] / 0.05) + 200,
-                              int(-T_c_f[1] / 0.05) + 200]
+                            int(-T_c_f[1] / 0.05) + 200]
                 bev_lidar_image = cv2.circle(
-                    bev_lidar_image, (t_f_pixels[0], t_f_pixels[1]), 1, (0, 0, 255), -1)
-            if self.data['move_base_path'][-1] is not None:
-                for goal in self.data['move_base_path'][-1]:
-                    T_odom_goal = get_affine_matrix_quat(goal[0], goal[1], goal[2])
-                    T_robot_goal = np.matmul(
-                        np.linalg.pinv(T_odom_robot), T_odom_goal)
-                    T_c_f = [T_robot_goal[0, 2], T_robot_goal[1, 2]]
-                    t_f_pixels = [int(T_c_f[0] / 0.05) + 200,
-                                int(-T_c_f[1] / 0.05) + 200]
-                    bev_lidar_image = cv2.circle(
-                        bev_lidar_image, (t_f_pixels[0], t_f_pixels[1]), 1, (255, 0, 0), -1)
+                    bev_lidar_image, (t_f_pixels[0], t_f_pixels[1]), 1, (255, 0, 0), -1)
+                self.data['move_base_path'][-1].append([t_f_pixels[0], t_f_pixels[1]])
 
+        # display the stuff
+        if self.viz_lidar == "true":
             cv2.imshow('bev_lidar', bev_lidar_image)
+            if len(self.costmap_imgs)>0:
+                cv2.imshow('local_costmap', local_costmap_img)
             cv2.waitKey(1)
+
 
     def path_callback(self, msg):
         """
@@ -301,15 +329,30 @@ class ListenRecordData:
                          odom.pose.pose.orientation.z, odom.pose.pose.orientation.w]])
         return tmp
 
-    def local_costmap_callback(self, msg):
-        self.local_costmap = msg.data
+    @staticmethod
+    def costmap_msg_to_img(local_costmap, yaw):
         # float32 cost map values between 0-1
-        self.local_costmap_img = np.reshape(self.local_costmap, (msg.info.height, msg.info.width))/100.0
+        local_costmap_img = np.reshape(local_costmap.data, (local_costmap.info.height, local_costmap.info.width))/100.0
         # convert to uint8
-        self.local_costmap_img = (self.local_costmap_img*255.0).astype(np.uint8)
-        if self.viz_lidar:
-            cv2.imshow('local_costmap', self.local_costmap_img)
-            cv2.waitKey(1)
+        local_costmap_img = (local_costmap_img*255.0).astype(np.uint8)
+        # dividing height and width by 2 to get the center of the image
+        height, width = local_costmap_img.shape[:2]
+        # get the center coordinates of the image to create the 2D rotation matrix
+        center = (width/2, height/2)
+        # using cv2.getRotationMatrix2D() to get the rotation matrix
+        rotate_matrix = cv2.getRotationMatrix2D(center=center, angle=yaw, scale=1)
+
+        # rotate the image using cv2.warpAffine
+        local_costmap_img = cv2.warpAffine(src=local_costmap_img, M=rotate_matrix, dsize=(width, height))
+        local_costmap_img = cv2.flip(local_costmap_img,0)
+        
+        return local_costmap_img
+
+
+    def local_costmap_callback(self, msg):
+        if self.start_time is not None:
+            self.local_costmap = msg            
+            self.local_costmap_img_time = msg.header.stamp.to_sec() - self.start_time
     
     def odom_callback(self, odom):
         tf = TransformStamped()
@@ -360,6 +403,21 @@ class ListenRecordData:
             '/')[-1].replace('.bag', '_data.pkl'))
         lidar_path = os.path.join(save_data_path, rosbag_path.split(
             '/')[-1].replace('.bag', '_data'))
+        costmap_path = os.path.join(save_data_path, rosbag_path.split(
+            '/')[-1].replace('.bag', '_costmap'))
+
+        # remove data points without costmaps or move_base paths
+        dataLength = len(self.data['pose'])
+        for index in range(1, dataLength):
+            if index not in self.costmap_imgs or not self.data['move_base_path']:
+                # self.data['pose'][index] = None
+                # self.data['joystick'][index] = None
+                # self.data['future_joystick'][index] = None
+                # self.data['human_expert_odom'][index] = None
+                # self.data['odom'][index] = None
+                # self.data['move_base_cmd_vel'][index] = None
+                del self.lidar_imgs[index]
+                print(index)
 
         print('Saving pkl to : ', pkl_path)
         pickle.dump(self.data, open(pkl_path, 'wb'))
@@ -375,6 +433,23 @@ class ListenRecordData:
             file_path = os.path.join(
                 lidar_path, '{}.png'.format(timestamp))
             if not cv2.imwrite(file_path, lidar_img):
+                raise Exception('Could not write image')
+            print("saved to ", file_path)
+
+        cprint('Done!', 'green')
+
+        print('Saving costmap images to: ', costmap_path)
+
+         # create costmap data directory if necessary
+        if not os.path.exists(costmap_path):
+            os.makedirs(costmap_path)
+
+        # write out each costmap image
+        for timestamp, costmap_img in self.costmap_imgs.items():
+            file_path = os.path.join(
+                costmap_path, '{}.png'.format(timestamp))
+            # cv2.imshow(str(timestamp),costmap_img)
+            if not cv2.imwrite(file_path, costmap_img):
                 raise Exception('Could not write image')
             print("saved to ", file_path)
 
@@ -500,5 +575,4 @@ if __name__ == '__main__':
             datarecorder.save_data(rosbag_path, save_data_path)
             print('Data was saved in :: ', save_data_path)
             exit(0)
-
     rospy.spin()

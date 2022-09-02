@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from re import A
 import numpy as np
 from termcolor import cprint
 
